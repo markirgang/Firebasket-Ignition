@@ -7,24 +7,25 @@
  * - Step 1 (Gas Pre-Flow & Initial Beeping):
  *   * Relay 1 (Propane Gas Valve) closes (ON) to allow propane gas to flow to the burner.
  *   * Simultaneously, Relay 2 (Piezo Beeper Speaker) pulses ON/OFF once per second (1 Hz) 10 times (10 seconds total).
- *   * Synchronous Light Interruption: For every ON pulse of Relay 2, Relay 5 (Burner LED Perimeter Light) 
+ *   * Synchronous Light Interruption: For every ON pulse of Relay 2, Relay 5 (Burner LED) 
  *     also pulses ON/OFF simultaneously.
  * 
  * - Step 2 (Spark Ignition & Rapid Beeping / Light Interruption):
- *   * After 10 beeps (10s), Relay 3 (Spark Ignitor) closes (ON) to turn on high-voltage spark ignition.
+ *   * After 10 beeps (10s), Relay 3 (Spark Ignitor) pulses at 50% duty cycle (500ms ON / 500ms OFF)
+ *     for up to 10 seconds instead of staying continuously energized.
  *   * Simultaneously, Relay 2 (Piezo Beeper Speaker) pulses ON/OFF twice per second (2 Hz).
- *   * Relay 5 (Burner LED Perimeter Light) pulses ON/OFF in sync with Relay 2 (2 Hz).
+ *   * Relay 5 (Burner LED) pulses ON/OFF in sync with Relay 2 (2 Hz).
  *   * AD8495 K-Type Thermocouple Flame Sensor monitored continuously for up to 10 seconds.
  * 
  * - Step 3 (Flame Detection Outcome):
  *   * FLAME DETECTED: Relay 3 (Ignitor) OFF, Relay 2 (Beeper) OFF. Relay 1 (Gas Valve) stays ON (RUNNING state).
- *     Relay 4 (Flame Detect Indicator Light) closes (ON). Relay 5 (Burner LED Perimeter Light) STAYS ON.
+ *     Relay 4 (Flame Detect Indicator Light) closes (ON). Relay 5 (Burner LED) STAYS ON.
  *   * NO FLAME DETECTED (after 10s timeout): Transition to 30s Safety Purge Delay (STATE_RETRY_WAIT).
  * 
  * - Step 4 (Retry & Lockout Logic):
  *   * If ignition fails, system waits 30 seconds (Safety Purge Delay) with all relays OFF.
  *   * The sequence repeats after 30 seconds and repeats 4 more times (5 total attempts: 1 initial + 4 retries).
- *   * If all 5 attempts fail, the system enters LOCKOUT state where Relay 5 (Burner LED Perimeter Light) 
+ *   * If all 5 attempts fail, the system enters LOCKOUT state where Relay 5 (Burner LED) 
  *     STAYS ON to signal finished attempts, while gas valve and ignitor remain OFF until reboot.
  */
 
@@ -39,7 +40,7 @@
 #define PIN_RELAY_2_BEEPER          33  // Relay 2: Piezo Beeper Speaker Relay (GPIO 33)
 #define PIN_RELAY_3_IGNITOR         25  // Relay 3: Spark Ignitor High-Voltage Relay (GPIO 25)
 #define PIN_RELAY_4_FLAME_LIGHT     26  // Relay 4: Flame Detect Indicator Light Relay (GPIO 26)
-#define PIN_RELAY_5_PERIMETER_LIGHT 27  // Relay 5: Burner LED Perimeter Light Relay (GPIO 27)
+#define PIN_RELAY_5_BURNER_LED 27  // Relay 5: Burner LED Relay (GPIO 27)
 
 // Unused Relays on eMariete ESP32-WROOM-32e 8-Relay Board (Explicitly held OFF for safety)
 #define PIN_RELAY_6_UNUSED          12  // Relay 6: Unused for now (GPIO 12)
@@ -71,6 +72,7 @@
 #define PREFLOW_BEEP_COUNT       10      // 10 beeps during gas pre-flow
 #define PREFLOW_BEEP_PERIOD_MS   1000    // 1 beep per second (500ms ON / 500ms OFF = 10s total)
 #define IGNITION_TIMEOUT_MS      10000   // 10-second max spark ignition attempt window
+#define SPARK_PULSE_PERIOD_MS    1000    // 50% duty cycle: 500ms ON / 500ms OFF during the spark window
 #define IGNITION_BEEP_PERIOD_MS  500     // 2 beeps per second (250ms ON / 250ms OFF)
 #define PURGE_WAIT_MS            30000   // 30-second delay between ignition attempts
 #define MAX_ATTEMPTS             5       // 1 initial attempt + 4 retries = 5 total attempts
@@ -80,7 +82,7 @@
 // ============================================================================
 enum IgnitionState {
     STATE_PREFLOW_BEEP,      // Relay 1 ON, Relays 2/4/5 pulse 1Hz for 10s (10 beeps)
-    STATE_IGNITION_ATTEMPT,  // Relay 1 & 3 ON, Relays 2/4/5 pulse 2Hz, check flame 10s max
+    STATE_IGNITION_ATTEMPT,  // Relay 1 ON, Relay 3 pulses 50% duty, Relays 2/5 pulse 2Hz, check flame 10s max
     STATE_RUNNING,           // Flame detected! Relay 1 & 6 ON, all other relays OFF
     STATE_RETRY_WAIT,        // Attempt failed: All relays OFF, wait 30s before retry
     STATE_LOCKOUT            // 5 attempts failed: All relays OFF, halt until reboot
@@ -102,7 +104,7 @@ void handleRetryWaitState();
 void handleLockoutState();
 bool readDebouncedFlameSensor();
 float getThermocoupleTemperatureC(uint16_t *outRawAdc = NULL, float *outVoltage = NULL);
-void setBeeperAndPerimeterLight(bool state);
+void setBeeperAndBurnerLed(bool state);
 void setAllRelaysOff();
 const char* getStateName(IgnitionState state);
 
@@ -124,7 +126,7 @@ void setup() {
     digitalWrite(PIN_RELAY_2_BEEPER, RELAY_OFF);
     digitalWrite(PIN_RELAY_3_IGNITOR, RELAY_OFF);
     digitalWrite(PIN_RELAY_4_FLAME_LIGHT, RELAY_OFF);
-    digitalWrite(PIN_RELAY_5_PERIMETER_LIGHT, RELAY_OFF);
+    digitalWrite(PIN_RELAY_5_BURNER_LED, RELAY_OFF);
     digitalWrite(PIN_RELAY_6_UNUSED, RELAY_OFF);
     digitalWrite(PIN_RELAY_7_UNUSED, RELAY_OFF);
     digitalWrite(PIN_RELAY_8_UNUSED, RELAY_OFF);
@@ -135,7 +137,7 @@ void setup() {
     pinMode(PIN_RELAY_2_BEEPER, OUTPUT);
     pinMode(PIN_RELAY_3_IGNITOR, OUTPUT);
     pinMode(PIN_RELAY_4_FLAME_LIGHT, OUTPUT);
-    pinMode(PIN_RELAY_5_PERIMETER_LIGHT, OUTPUT);
+    pinMode(PIN_RELAY_5_BURNER_LED, OUTPUT);
     pinMode(PIN_RELAY_6_UNUSED, OUTPUT);
     pinMode(PIN_RELAY_7_UNUSED, OUTPUT);
     pinMode(PIN_RELAY_8_UNUSED, OUTPUT);
@@ -147,7 +149,7 @@ void setup() {
     Serial.printf(" - Relay 2 (Piezo Beeper Speaker):     GPIO %d\n", PIN_RELAY_2_BEEPER);
     Serial.printf(" - Relay 3 (Spark Ignitor):            GPIO %d\n", PIN_RELAY_3_IGNITOR);
     Serial.printf(" - Relay 4 (Flame Indicator Light):    GPIO %d (Energized on Flame Detect)\n", PIN_RELAY_4_FLAME_LIGHT);
-    Serial.printf(" - Relay 5 (Burner LED Perimeter Light):GPIO %d\n", PIN_RELAY_5_PERIMETER_LIGHT);
+    Serial.printf(" - Relay 5 (Burner LED):GPIO %d\n", PIN_RELAY_5_BURNER_LED);
     Serial.printf(" - Relays 6, 7 & 8:                     GPIO %d, %d, %d (Disabled/Unused)\n", 
                   PIN_RELAY_6_UNUSED, PIN_RELAY_7_UNUSED, PIN_RELAY_8_UNUSED);
     Serial.printf(" - AD8495 Thermocouple:                 GPIO %d (ADC1_CH6 Analog Input)\n", PIN_FLAME_SENSOR);
@@ -217,28 +219,28 @@ void transitionToState(IgnitionState newState) {
             digitalWrite(PIN_RELAY_1_GAS, RELAY_ON);
             digitalWrite(PIN_RELAY_3_IGNITOR, RELAY_OFF);
             digitalWrite(PIN_RELAY_4_FLAME_LIGHT, RELAY_OFF);
-            setBeeperAndPerimeterLight(false);
+            setBeeperAndBurnerLed(false);
             digitalWrite(PIN_STATUS_LED, HIGH);
             Serial.println(F("Relay 1 (Gas Valve) CLOSED -> Propane flowing. Starting 10s pre-flow beeps..."));
             break;
 
         case STATE_IGNITION_ATTEMPT:
-            // Relay 1 stays ON (Gas Valve), Relay 3 ON (Spark Ignitor)
+            // Relay 1 stays ON (Gas Valve). Relay 3 starts the 50% spark pulse (handler owns the cycle).
             digitalWrite(PIN_RELAY_1_GAS, RELAY_ON);
             digitalWrite(PIN_RELAY_3_IGNITOR, RELAY_ON);
-            setBeeperAndPerimeterLight(false);
-            Serial.println(F("Relay 3 (Spark Ignitor) CLOSED -> High-Voltage Spark ACTIVE (10s max timeout)."));
+            setBeeperAndBurnerLed(false);
+            Serial.println(F("Relay 3 (Spark Ignitor) PULSING at 50% duty (500ms ON / 500ms OFF, 10s max timeout)."));
             break;
 
         case STATE_RUNNING:
-            // Relay 1 stays ON (Gas Valve), Relay 4 ON (Flame Indicator Light), Relay 5 ON (Burner LED Perimeter Light STAYS ON), Ignitor & Beeper OFF
+            // Relay 1 stays ON (Gas Valve), Relay 4 ON (Flame Indicator Light), Relay 5 ON (Burner LED STAYS ON), Ignitor & Beeper OFF
             digitalWrite(PIN_RELAY_1_GAS, RELAY_ON);
             digitalWrite(PIN_RELAY_3_IGNITOR, RELAY_OFF);
             digitalWrite(PIN_RELAY_4_FLAME_LIGHT, RELAY_ON);
-            digitalWrite(PIN_RELAY_5_PERIMETER_LIGHT, RELAY_ON);
+            digitalWrite(PIN_RELAY_5_BURNER_LED, RELAY_ON);
             digitalWrite(PIN_RELAY_2_BEEPER, RELAY_OFF);
             digitalWrite(PIN_STATUS_LED, HIGH);
-            Serial.println(F(">>> FLAME DETECTED! Relay 4 (Flame Indicator Light) ON, Relay 5 (Perimeter Light) STAYS ON. Gas Valve ON. RUNNING state. <<<"));
+            Serial.println(F(">>> FLAME DETECTED! Relay 4 (Flame Indicator Light) ON, Relay 5 (Burner LED) STAYS ON. Gas Valve ON. RUNNING state. <<<"));
             break;
 
         case STATE_RETRY_WAIT:
@@ -251,11 +253,11 @@ void transitionToState(IgnitionState newState) {
         case STATE_LOCKOUT:
             // Turn off all relays permanently, but Relay 5 STAYS ON to indicate finished attempts
             setAllRelaysOff();
-            digitalWrite(PIN_RELAY_5_PERIMETER_LIGHT, RELAY_ON);
+            digitalWrite(PIN_RELAY_5_BURNER_LED, RELAY_ON);
             digitalWrite(PIN_STATUS_LED, LOW);
             Serial.println(F("=========================================================================="));
             Serial.println(F("!!! CRITICAL SAFETY LOCKOUT: 5 FAILED ATTEMPTS (1 INITIAL + 4 RETRIES).  !!!"));
-            Serial.println(F("!!! SYSTEM HALTED. Relay 5 (Burner LED Perimeter Light) STAYS ON.       !!!"));
+            Serial.println(F("!!! SYSTEM HALTED. Relay 5 (Burner LED) STAYS ON.       !!!"));
             Serial.println(F("=========================================================================="));
             break;
     }
@@ -264,7 +266,7 @@ void transitionToState(IgnitionState newState) {
 /**
  * STEP 1: Relay 1 ON (Propane Gas Valve Open).
  * Relay 2 (Piezo Beeper Speaker) pulses 10 times at 1 pulse per second (1 Hz: 500ms ON / 500ms OFF).
- * Relay 5 (Burner LED Perimeter Light) pulses ON/OFF in sync with Relay 2.
+ * Relay 5 (Burner LED) pulses ON/OFF in sync with Relay 2.
  * Total duration: 10 seconds.
  */
 void handlePreflowBeepState() {
@@ -281,27 +283,32 @@ void handlePreflowBeepState() {
         uint32_t cycleTime = elapsed % PREFLOW_BEEP_PERIOD_MS;
         // Pulse 500ms ON / 500ms OFF (1 Hz)
         bool pulseState = (cycleTime < (PREFLOW_BEEP_PERIOD_MS / 2));
-        setBeeperAndPerimeterLight(pulseState);
+        setBeeperAndBurnerLed(pulseState);
     } else {
         // 10 beeps complete -> turn off beeper & lights, transition to ignition attempt
-        setBeeperAndPerimeterLight(false);
+        setBeeperAndBurnerLed(false);
         transitionToState(STATE_IGNITION_ATTEMPT);
     }
 }
 
 /**
- * STEP 2 & 3: Relay 3 ON (Spark Ignitor). Relay 1 stays ON (Gas Valve).
+ * STEP 2 & 3: Relay 3 pulses at 50% duty cycle (Spark Ignitor). Relay 1 stays ON (Gas Valve).
  * Relay 2 (Piezo Beeper Speaker) pulses ON/OFF twice per second (2 Hz: 250ms ON / 250ms OFF).
- * Relay 5 (Burner LED Perimeter Light) pulses ON/OFF in sync with Relay 2.
+ * Relay 5 (Burner LED) pulses ON/OFF in sync with Relay 2.
  * Monitor AD8495 Thermocouple for up to 10 seconds.
  */
 void handleIgnitionAttemptState() {
     uint32_t elapsed = millis() - stateStartTime;
 
-    // Pulse Beeper (Relay 2) and Perimeter Light (Relay 5) twice per second (2 Hz)
+    // Pulse Relay 3 (Spark Ignitor) at 50% duty cycle for the 10s window (500ms ON / 500ms OFF)
+    uint32_t sparkCycleTime = elapsed % SPARK_PULSE_PERIOD_MS;
+    bool sparkOn = (sparkCycleTime < (SPARK_PULSE_PERIOD_MS / 2));
+    digitalWrite(PIN_RELAY_3_IGNITOR, sparkOn ? RELAY_ON : RELAY_OFF);
+
+    // Pulse Beeper (Relay 2) and Burner LED (Relay 5) twice per second (2 Hz)
     uint32_t cycleTime = elapsed % IGNITION_BEEP_PERIOD_MS;
     bool pulseState = (cycleTime < (IGNITION_BEEP_PERIOD_MS / 2));
-    setBeeperAndPerimeterLight(pulseState);
+    setBeeperAndBurnerLed(pulseState);
 
     // Continuous AD8495 Thermocouple flame monitoring
     bool isFlame = readDebouncedFlameSensor();
@@ -438,13 +445,13 @@ bool readDebouncedFlameSensor() {
 }
 
 /**
- * Controls Relay 2 (Piezo Beeper Speaker) and Relay 5 (Burner LED Perimeter Light) together.
- * For every "ON" pulse of Beeper Relay 2, Perimeter Light Relay 5 also pulses.
+ * Controls Relay 2 (Piezo Beeper Speaker) and Relay 5 (Burner LED) together.
+ * For every "ON" pulse of Beeper Relay 2, Burner LED Relay 5 also pulses.
  */
-void setBeeperAndPerimeterLight(bool state) {
+void setBeeperAndBurnerLed(bool state) {
     uint8_t relayState = state ? RELAY_ON : RELAY_OFF;
     digitalWrite(PIN_RELAY_2_BEEPER, relayState);
-    digitalWrite(PIN_RELAY_5_PERIMETER_LIGHT, relayState);
+    digitalWrite(PIN_RELAY_5_BURNER_LED, relayState);
 }
 
 /**
@@ -455,7 +462,7 @@ void setAllRelaysOff() {
     digitalWrite(PIN_RELAY_2_BEEPER, RELAY_OFF);
     digitalWrite(PIN_RELAY_3_IGNITOR, RELAY_OFF);
     digitalWrite(PIN_RELAY_4_FLAME_LIGHT, RELAY_OFF);
-    digitalWrite(PIN_RELAY_5_PERIMETER_LIGHT, RELAY_OFF);
+    digitalWrite(PIN_RELAY_5_BURNER_LED, RELAY_OFF);
     digitalWrite(PIN_RELAY_6_UNUSED, RELAY_OFF);
     digitalWrite(PIN_RELAY_7_UNUSED, RELAY_OFF);
     digitalWrite(PIN_RELAY_8_UNUSED, RELAY_OFF);
@@ -467,11 +474,11 @@ void setAllRelaysOff() {
  */
 const char* getStateName(IgnitionState state) {
     switch (state) {
-        case STATE_PREFLOW_BEEP:     return "PREFLOW_BEEP (Step 1: Gas ON, 10 Beeps @ 1Hz, Perimeter Light Pulse)";
-        case STATE_IGNITION_ATTEMPT: return "IGNITION_ATTEMPT (Step 2: Spark ON, Beeps/Perimeter Light @ 2Hz, 10s Thermocouple Check)";
-        case STATE_RUNNING:          return "RUNNING (Step 3: Flame Detected, Gas ON, Relay 4 Flame Light ON, Relay 5 Perimeter Light STAYS ON)";
+        case STATE_PREFLOW_BEEP:     return "PREFLOW_BEEP (Step 1: Gas ON, 10 Beeps @ 1Hz, Burner LED Pulse)";
+        case STATE_IGNITION_ATTEMPT: return "IGNITION_ATTEMPT (Step 2: Spark 50% duty, Beeps/Burner LED @ 2Hz, 10s Thermocouple Check)";
+        case STATE_RUNNING:          return "RUNNING (Step 3: Flame Detected, Gas ON, Relay 4 Flame Light ON, Relay 5 Burner LED STAYS ON)";
         case STATE_RETRY_WAIT:       return "RETRY_WAIT (Step 4: All Relays OFF, 30s Safety Purge Delay)";
-        case STATE_LOCKOUT:          return "LOCKOUT (5 Attempts Failed - System Halted, Relay 5 Perimeter Light STAYS ON)";
+        case STATE_LOCKOUT:          return "LOCKOUT (5 Attempts Failed - System Halted, Relay 5 Burner LED STAYS ON)";
         default:                     return "UNKNOWN";
     }
 }
