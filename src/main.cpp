@@ -76,6 +76,7 @@
 #define IGNITION_BEEP_PERIOD_MS  500     // 2 beeps per second (250ms ON / 250ms OFF)
 #define PURGE_WAIT_MS            30000   // 30-second delay between ignition attempts
 #define MAX_ATTEMPTS             5       // 1 initial attempt + 4 retries = 5 total attempts
+#define MAX_RUN_TIME_MS          14400000  // 4-hour maximum flame run time, then gas shuts off and lockout
 
 // ============================================================================
 // SYSTEM STATES
@@ -349,6 +350,12 @@ void handleRunningState() {
         } else {
             transitionToState(STATE_LOCKOUT);
         }
+        return;
+    }
+
+    if (millis() - stateStartTime >= MAX_RUN_TIME_MS) {
+        Serial.println(F("!!! MAX RUN TIME REACHED. Gas shut off, system locked out until reboot. !!!"));
+        transitionToState(STATE_LOCKOUT);
     }
 }
 

@@ -91,7 +91,13 @@ Automatic firebasket ignition firmware designed for ESP32 32E Wroom Relay Boards
   - (If temperature drops below 130°C hysteresis during operation, flame loss is triggered, Relay 4 de-energizes, and gas valve closes instantly for safety).
 - **No Flame Detected**: If temperature stays below 150°C after 10 seconds, gas valve, ignitor, and beeper turn OFF to enter 30-second purge wait.
 
-### 4. Retries (30-Second Purge) & 5-Attempt Lockout
+### 4. Maximum Run Time Shutoff (4 Hours)
+- If the flame stays detected for **4 hours** (`MAX_RUN_TIME_MS` in `src/main.cpp`), the firmware shuts off the gas valve and all other relays, then enters **LOCKOUT**.
+- Relay 5 (Burner LED) stays ON in lockout, as it does for other lockouts.
+- Power must be cycled to restart the system.
+- This timer runs in the ESP32 firmware. It is not an independent hardware shutoff. Use a separate hardware timer or a flame-sensing gas valve for real safety.
+
+### 5. Retries (30-Second Purge) & 5-Attempt Lockout
 - System waits **30 seconds** with all relays OFF (Safety Purge Delay).
 - The sequence repeats after 30 seconds and repeats 4 more times (**5 total attempts**: 1 initial + 4 retries).
 - If all 5 attempts fail to detect a flame, the system enters **LOCKOUT** state where **Relay 5 (Burner LED) STAYS ON** to indicate finished ignition attempts, while all other relays (gas valve, ignitor, beeper) remain OFF until power reboot.
